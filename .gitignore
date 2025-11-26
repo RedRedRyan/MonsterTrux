@@ -1,7 +1,0 @@
-# .gitignore
-*
-!Assets/
-Assets/*
-!Assets/Resources/
-Assets/Resources/*
-!Assets/Resources/Scripts/
