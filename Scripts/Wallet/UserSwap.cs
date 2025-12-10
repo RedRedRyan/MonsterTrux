@@ -3,112 +3,207 @@ using UnityEngine.UI;
 using TMPro;
 using System.Numerics;
 using System.Threading.Tasks;
+using System.Collections.Generic;
+using System.Linq;
+using Thirdweb;
 
 namespace Thirdweb.Unity
 {
     public class UserSwap : MonoBehaviour
     {
-        [Header("Swap Panels")]
-        [SerializeField] private GameObject diamondToKasiPanel;
-        [SerializeField] private GameObject kasiToDiamondPanel;
+        [Header("UI References")]
+        [SerializeField] private GameObject swapPanel;
+        [SerializeField] private TMP_Dropdown fromCurrencyDropdown;
+        [SerializeField] private TMP_Dropdown toCurrencyDropdown;
+        [SerializeField] private TMP_InputField amountInput;
+        [SerializeField] private TMP_Text outputText;
+        [SerializeField] private TMP_Text gasEstimateText;
+        [SerializeField] private TMP_Text statusText;
+        [SerializeField] private TMP_Text fromBalanceText;
+        [SerializeField] private TMP_Text toBalanceText;
+        [SerializeField] private Slider progressSlider;
+        [SerializeField] private Button swapButton;
+        [SerializeField] private Button cancelButton;
 
-        [Header("Diamond to KASI Swap UI")]
-        [SerializeField] private TMP_InputField diamondToKasiAmountInput;
-        [SerializeField] private Button diamondToKasiSwapButton;
-        [SerializeField] private Button diamondToKasiCancelButton;
-        [SerializeField] private TMP_Text diamondToKasiStatusText;
-        [SerializeField] private TMP_Text diamondToKasiFeeText;
-        [SerializeField] private Slider diamondToKasiProgressSlider;
-        [SerializeField] private TMP_Text diamondToKasiOutputText;
-        [SerializeField] private TMP_Text diamondToKasiDiamondBalance;
-        [SerializeField] private TMP_Text diamondToKasiKasiBalance;
-
-        [Header("KASI to Diamond Swap UI")]
-        [SerializeField] private TMP_InputField kasiToDiamondAmountInput;
-        [SerializeField] private Button kasiToDiamondSwapButton;
-        [SerializeField] private Button kasiToDiamondCancelButton;
-        [SerializeField] private TMP_Text kasiToDiamondStatusText;
-        [SerializeField] private TMP_Text kasiToDiamondFeeText;
-        [SerializeField] private Slider kasiToDiamondProgressSlider;
-        [SerializeField] private TMP_Text kasiToDiamondOutputText;
-        [SerializeField] private TMP_Text kasiToDiamondKasiBalance;
-        [SerializeField] private TMP_Text kasiToDiamondDiamondBalance;
-
-        [Header("Swap Settings")]
-        [SerializeField] private string faucetAddress = "0x73a0Ce2918B2771b7f10F61444c9D726bDCd8dea";
+        [Header("Contract Settings")]
+        [SerializeField] private string kasiDmdPoolAddress = "0x73a0Ce2918B2771b7f10F61444c9D726bDCd8dea";
+        [SerializeField] private string dmdPolPoolAddress = "0x9856A6f0CE553AB3A7BBcc416C082A519F1821f1";
         [SerializeField] private string kasiTokenAddress = "0x02D5C205B3E4F550a7c6D1432E3E12c106A25a9a";
         [SerializeField] private string diamondTokenAddress = "0x1b0bA94B1F01590E4aeCDa2363A839e99d57fF5b";
         [SerializeField] private ulong chainId = 80002;
-        [SerializeField][Range(0.1f, 5f)] private float slippageTolerance = 0.5f;
+        [SerializeField][Range(0.1f, 10f)] private float slippageTolerance = 2.0f; // Increased to 2% default
 
-        private ThirdwebContract faucetContract;
+        private ThirdwebContract kasiDmdPoolContract;
+        private ThirdwebContract dmdPolPoolContract;
         private ThirdwebContract kasiContract;
         private ThirdwebContract diamondContract;
-        private bool faucetContractInitialized = false;
-        private bool kasiContractInitialized = false;
-        private bool diamondContractInitialized = false;
+        
+        private bool poolsInitialized = false;
         private UserDetails userDetails;
+        private string userAddress;
+        private IThirdwebWallet activeWallet;
 
         private const int TOKEN_DECIMALS = 18;
-        private BigInteger floorPrice = BigInteger.Parse("100000000000000000000"); // 100 KASI per DIAMOND
+        private BigInteger floorPrice = BigInteger.Parse("100000000000000000000"); // Default: 100 KASI per DIAMOND
+        
+        // Currency definitions
+        public enum Currency { KASI, DIAMOND, POL }
+        private Dictionary<Currency, string> currencySymbols = new Dictionary<Currency, string>
+        {
+            { Currency.KASI, "KASI" },
+            { Currency.DIAMOND, "DIAMOND" },
+            { Currency.POL, "POL" }
+        };
+
+        private Currency selectedFromCurrency = Currency.KASI;
+        private Currency selectedToCurrency = Currency.DIAMOND;
+        private ThirdwebTransactionReceipt swapTxn;
 
         private void Awake()
         {
-            userDetails = FindObjectOfType<UserDetails>();
+            userDetails = FindFirstObjectByType<UserDetails>();
             
             if (ThirdwebManager.Instance != null)
             {
-                var wallet = ThirdwebManager.Instance.GetActiveWallet();
-                if (wallet != null && wallet is InAppWallet inAppWallet)
-                {
-                    chainId = inAppWallet.chainId;
-                }
+                activeWallet = ThirdwebManager.Instance.GetActiveWallet();
             }
         }
 
         private void Start()
         {
-            InitializeDiamondToKasiUI();
-            InitializeKasiToDiamondUI();
+            InitializeUI();
             _ = InitializeContractsAsync();
         }
 
         #region UI Initialization
 
-        private void InitializeDiamondToKasiUI()
+        private void InitializeUI()
         {
-            if (diamondToKasiSwapButton != null)
+            // Initialize dropdowns
+            if (fromCurrencyDropdown != null)
             {
-                diamondToKasiSwapButton.onClick.RemoveAllListeners();
-                diamondToKasiSwapButton.onClick.AddListener(() => _ = ExecuteDiamondToKasiSwapAsync());
+                fromCurrencyDropdown.ClearOptions();
+                fromCurrencyDropdown.AddOptions(new List<string> { "KASI", "DIAMOND", "POL" });
+                fromCurrencyDropdown.onValueChanged.AddListener(OnFromCurrencyChanged);
+                fromCurrencyDropdown.value = 0;
             }
 
-            if (diamondToKasiCancelButton != null)
+            if (toCurrencyDropdown != null)
             {
-                diamondToKasiCancelButton.onClick.RemoveAllListeners();
-                diamondToKasiCancelButton.onClick.AddListener(HideDiamondToKasiPanel);
+                toCurrencyDropdown.ClearOptions();
+                toCurrencyDropdown.AddOptions(new List<string> { "KASI", "DIAMOND", "POL" });
+                toCurrencyDropdown.onValueChanged.AddListener(OnToCurrencyChanged);
+                toCurrencyDropdown.value = 1;
             }
 
-            if (diamondToKasiAmountInput != null)
-                diamondToKasiAmountInput.onValueChanged.AddListener(val => OnDiamondToKasiInputChanged());
+            // Initialize buttons
+            if (swapButton != null)
+            {
+                swapButton.onClick.RemoveAllListeners();
+                swapButton.onClick.AddListener(() => _ = ExecuteSwapAsync());
+            }
+
+            if (cancelButton != null)
+            {
+                cancelButton.onClick.RemoveAllListeners();
+                cancelButton.onClick.AddListener(HideSwapPanel);
+            }
+
+            // Initialize input field
+            if (amountInput != null)
+                amountInput.onValueChanged.AddListener(val => OnAmountInputChanged());
+
+            ResetUI();
         }
 
-        private void InitializeKasiToDiamondUI()
+        private void OnFromCurrencyChanged(int index)
         {
-            if (kasiToDiamondSwapButton != null)
-            {
-                kasiToDiamondSwapButton.onClick.RemoveAllListeners();
-                kasiToDiamondSwapButton.onClick.AddListener(() => _ = ExecuteKasiToDiamondSwapAsync());
-            }
+            selectedFromCurrency = (Currency)index;
+            UpdateToCurrencyDropdown();
+            _ = UpdateBalancesAsync();
+            OnAmountInputChanged();
+        }
 
-            if (kasiToDiamondCancelButton != null)
-            {
-                kasiToDiamondCancelButton.onClick.RemoveAllListeners();
-                kasiToDiamondCancelButton.onClick.AddListener(HideKasiToDiamondPanel);
-            }
+        private void OnToCurrencyChanged(int index)
+        {
+            selectedToCurrency = (Currency)index;
+            _ = UpdateBalancesAsync();
+            OnAmountInputChanged();
+        }
 
-            if (kasiToDiamondAmountInput != null)
-                kasiToDiamondAmountInput.onValueChanged.AddListener(val => OnKasiToDiamondInputChanged());
+        private void UpdateToCurrencyDropdown()
+        {
+            if (toCurrencyDropdown == null) return;
+
+            List<Currency> availableCurrencies = GetAvailableToCurrencies(selectedFromCurrency);
+            
+            toCurrencyDropdown.ClearOptions();
+            toCurrencyDropdown.AddOptions(availableCurrencies.Select(c => currencySymbols[c]).ToList());
+            
+            if (availableCurrencies.Count > 0)
+            {
+                selectedToCurrency = availableCurrencies[0];
+                toCurrencyDropdown.value = 0;
+            }
+        }
+
+        private List<Currency> GetAvailableToCurrencies(Currency fromCurrency)
+        {
+            switch (fromCurrency)
+            {
+                case Currency.KASI:
+                    return new List<Currency> { Currency.DIAMOND };
+                case Currency.DIAMOND:
+                    return new List<Currency> { Currency.KASI, Currency.POL };
+                case Currency.POL:
+                    return new List<Currency> { Currency.DIAMOND };
+                default:
+                    return new List<Currency> { Currency.KASI };
+            }
+        }
+
+        private void OnAmountInputChanged()
+        {
+            UpdateSwapButtonState();
+            UpdateGasEstimate();
+            _ = CalculateAndDisplayOutputAsync();
+        }
+
+        private void UpdateSwapButtonState()
+        {
+            if (swapButton == null) return;
+
+            bool isValid = IsValidAmount(amountInput?.text);
+            swapButton.interactable = isValid && poolsInitialized;
+
+            var buttonText = swapButton.GetComponentInChildren<TMP_Text>();
+            if (buttonText != null)
+            {
+                buttonText.text = !poolsInitialized ? "INITIALIZING..." : 
+                    $"SWAP {currencySymbols[selectedFromCurrency]} FOR {currencySymbols[selectedToCurrency]}";
+            }
+        }
+
+        private void UpdateGasEstimate()
+        {
+            if (gasEstimateText == null || !IsValidAmount(amountInput?.text) || !poolsInitialized)
+                return;
+
+            gasEstimateText.text = "Gas: ~0.002-0.008 POL";
+        }
+
+        private void ResetUI()
+        {
+            if (amountInput != null) amountInput.text = "";
+            if (statusText != null)
+            {
+                statusText.text = poolsInitialized ? "Select currencies and enter amount" : "Initializing...";
+                statusText.color = Color.white;
+            }
+            if (gasEstimateText != null) gasEstimateText.text = "Gas: ~0.002-0.008 POL";
+            if (progressSlider != null) progressSlider.value = 0;
+            if (outputText != null) outputText.text = "0.0000";
+            UpdateSwapButtonState();
         }
 
         #endregion
@@ -117,73 +212,46 @@ namespace Thirdweb.Unity
 
         private async Task InitializeContractsAsync()
         {
-            await InitializeFaucetContractAsync();
-            await InitializeKasiContractAsync();
-            await InitializeDiamondContractAsync();
-        }
-
-        private async Task InitializeFaucetContractAsync()
-        {
-            if (faucetContractInitialized) return;
-
             try
             {
-                UpdateDiamondToKasiStatus("Initializing swap contract...", true);
-                UpdateKasiToDiamondStatus("Initializing swap contract...", true);
-
-                faucetContract = await ThirdwebContract.Create(
-                    client: ThirdwebManager.Instance.Client,
-                    address: faucetAddress,
-                    chain: chainId,
-                    abi: @"
-[
-  {
-    ""type"": ""function"",
-    ""name"": ""swapDiamondForKasi"",
-    ""inputs"": [
-      { ""name"": ""diamondIn"", ""type"": ""uint256"", ""internalType"": ""uint256"" },
-      { ""name"": ""minKasiOut"", ""type"": ""uint256"", ""internalType"": ""uint256"" }
-    ],
-    ""outputs"": [],
-    ""stateMutability"": ""nonpayable""
-  },
-  {
-    ""type"": ""function"",
-    ""name"": ""swapKasiForDiamond"",
-    ""inputs"": [
-      { ""name"": ""kasiIn"", ""type"": ""uint256"", ""internalType"": ""uint256"" },
-      { ""name"": ""minDiamondOut"", ""type"": ""uint256"", ""internalType"": ""uint256"" }
-    ],
-    ""outputs"": [],
-    ""stateMutability"": ""nonpayable""
-  },
-  {
-    ""type"": ""function"",
-    ""name"": ""getReserves"",
-    ""inputs"": [],
-    ""outputs"": [
-      { ""name"": """", ""type"": ""uint256"", ""internalType"": ""uint256"" },
-      { ""name"": """", ""type"": ""uint256"", ""internalType"": ""uint256"" }
-    ],
-    ""stateMutability"": ""view""
-  },
-  {
-    ""type"": ""function"",
-    ""name"": ""floorPrice"",
-    ""inputs"": [],
-    ""outputs"": [
-      { ""name"": """", ""type"": ""uint256"", ""internalType"": ""uint256"" }
-    ],
-    ""stateMutability"": ""view""
-  }
-]
-"
+                UpdateStatus("Initializing contracts...", true);
+                
+                var client = ThirdwebManager.Instance.Client;
+                var chain = new BigInteger(chainId);
+                
+                // Initialize KASI-DMD pool
+                kasiDmdPoolContract = await ThirdwebContract.Create(
+                    client: client,
+                    address: kasiDmdPoolAddress,
+                    chain: chain,
+                    abi: GetKasiDmdPoolABI()
                 );
 
-                // Get floor price from contract
+                // Initialize DMD-POL pool
+                dmdPolPoolContract = await ThirdwebContract.Create(
+                    client: client,
+                    address: dmdPolPoolAddress,
+                    chain: chain,
+                    abi: GetDmdPolPoolABI()
+                );
+
+                // Initialize token contracts
+                kasiContract = await ThirdwebContract.Create(
+                    client: client,
+                    address: kasiTokenAddress,
+                    chain: chain
+                );
+
+                diamondContract = await ThirdwebContract.Create(
+                    client: client,
+                    address: diamondTokenAddress,
+                    chain: chain
+                );
+
+                // Get floor price from KASI-DMD pool
                 try
                 {
-                    floorPrice = await ThirdwebContract.Read<BigInteger>(faucetContract, "floorPrice");
+                    floorPrice = await ThirdwebContract.Read<BigInteger>(kasiDmdPoolContract, "floorPrice");
                     Debug.Log($"Floor price: {ConvertFromWei(floorPrice, TOKEN_DECIMALS)} KASI per DIAMOND");
                 }
                 catch (System.Exception e)
@@ -191,312 +259,444 @@ namespace Thirdweb.Unity
                     Debug.LogWarning($"Could not read floor price, using default: {e.Message}");
                 }
 
-                faucetContractInitialized = true;
-                Debug.Log($"Faucet contract initialized at {faucetAddress}");
-                UpdateDiamondToKasiStatus("Ready to swap", true);
-                UpdateKasiToDiamondStatus("Ready to swap", true);
-                UpdateDiamondToKasiButtonState();
-                UpdateKasiToDiamondButtonState();
+                poolsInitialized = true;
+                Debug.Log("All contracts initialized successfully");
+                UpdateStatus("Ready to swap", true);
+                
+                // Get user address
+                if (activeWallet != null)
+                {
+                    userAddress = await activeWallet.GetAddress();
+                    Debug.Log($"User address: {userAddress}");
+                }
             }
             catch (System.Exception e)
             {
-                Debug.LogError($"Failed to initialize faucet contract: {e.Message}");
-                UpdateDiamondToKasiStatus($"Swap init failed: {e.Message}", false);
-                UpdateKasiToDiamondStatus($"Swap init failed: {e.Message}", false);
+                Debug.LogError($"Failed to initialize contracts: {e.Message}");
+                UpdateStatus($"Initialization failed: {e.Message}", false);
             }
         }
 
-        private async Task InitializeKasiContractAsync()
+        private string GetKasiDmdPoolABI()
         {
-            if (kasiContractInitialized) return;
-
-            try
-            {
-                kasiContract = await ThirdwebContract.Create(
-                    client: ThirdwebManager.Instance.Client,
-                    address: kasiTokenAddress,
-                    chain: chainId
-                );
-
-                kasiContractInitialized = true;
-                Debug.Log($"KASI contract initialized at {kasiTokenAddress}");
-            }
-            catch (System.Exception e)
-            {
-                Debug.LogError($"Failed to initialize KASI contract: {e.Message}");
-            }
+            return @"[
+                {
+                    ""type"": ""function"",
+                    ""name"": ""swapDiamondForKasi"",
+                    ""inputs"": [
+                        { ""name"": ""diamondIn"", ""type"": ""uint256"", ""internalType"": ""uint256"" },
+                        { ""name"": ""minKasiOut"", ""type"": ""uint256"", ""internalType"": ""uint256"" }
+                    ],
+                    ""outputs"": [],
+                    ""stateMutability"": ""nonpayable""
+                },
+                {
+                    ""type"": ""function"",
+                    ""name"": ""swapKasiForDiamond"",
+                    ""inputs"": [
+                        { ""name"": ""kasiIn"", ""type"": ""uint256"", ""internalType"": ""uint256"" },
+                        { ""name"": ""minDiamondOut"", ""type"": ""uint256"", ""internalType"": ""uint256"" }
+                    ],
+                    ""outputs"": [],
+                    ""stateMutability"": ""nonpayable""
+                },
+                {
+                    ""type"": ""function"",
+                    ""name"": ""getReserves"",
+                    ""inputs"": [],
+                    ""outputs"": [
+                        { ""name"": """", ""type"": ""uint256"", ""internalType"": ""uint256"" },
+                        { ""name"": """", ""type"": ""uint256"", ""internalType"": ""uint256"" }
+                    ],
+                    ""stateMutability"": ""view""
+                },
+                {
+                    ""type"": ""function"",
+                    ""name"": ""floorPrice"",
+                    ""inputs"": [],
+                    ""outputs"": [
+                        { ""name"": """", ""type"": ""uint256"", ""internalType"": ""uint256"" }
+                    ],
+                    ""stateMutability"": ""view""
+                }
+            ]";
         }
 
-        private async Task InitializeDiamondContractAsync()
+        private string GetDmdPolPoolABI()
         {
-            if (diamondContractInitialized) return;
-
-            try
-            {
-                diamondContract = await ThirdwebContract.Create(
-                    client: ThirdwebManager.Instance.Client,
-                    address: diamondTokenAddress,
-                    chain: chainId
-                );
-
-                diamondContractInitialized = true;
-                Debug.Log($"Diamond contract initialized at {diamondTokenAddress}");
-            }
-            catch (System.Exception e)
-            {
-                Debug.LogError($"Failed to initialize Diamond contract: {e.Message}");
-            }
+            return @"[
+                {
+                    ""type"": ""function"",
+                    ""name"": ""swapPolForDiamond"",
+                    ""inputs"": [
+                        { ""name"": ""minDiamondOut"", ""type"": ""uint256"", ""internalType"": ""uint256"" }
+                    ],
+                    ""outputs"": [],
+                    ""stateMutability"": ""payable""
+                },
+                {
+                    ""type"": ""function"",
+                    ""name"": ""swapDiamondForPol"",
+                    ""inputs"": [
+                        { ""name"": ""diamondIn"", ""type"": ""uint256"", ""internalType"": ""uint256"" },
+                        { ""name"": ""minPolOut"", ""type"": ""uint256"", ""internalType"": ""uint256"" }
+                    ],
+                    ""outputs"": [],
+                    ""stateMutability"": ""nonpayable""
+                },
+                {
+                    ""type"": ""function"",
+                    ""name"": ""getReserves"",
+                    ""inputs"": [],
+                    ""outputs"": [
+                        { ""name"": ""polReserve"", ""type"": ""uint256"", ""internalType"": ""uint256"" },
+                        { ""name"": ""diamondReserve"", ""type"": ""uint256"", ""internalType"": ""uint256"" }
+                    ],
+                    ""stateMutability"": ""view""
+                },
+                {
+                    ""type"": ""function"",
+                    ""name"": ""getPolToDiamondQuote"",
+                    ""inputs"": [
+                        { ""name"": ""polIn"", ""type"": ""uint256"", ""internalType"": ""uint256"" }
+                    ],
+                    ""outputs"": [
+                        { ""name"": ""diamondOut"", ""type"": ""uint256"", ""internalType"": ""uint256"" }
+                    ],
+                    ""stateMutability"": ""view""
+                },
+                {
+                    ""type"": ""function"",
+                    ""name"": ""getDiamondToPolQuote"",
+                    ""inputs"": [
+                        { ""name"": ""diamondIn"", ""type"": ""uint256"", ""internalType"": ""uint256"" }
+                    ],
+                    ""outputs"": [
+                        { ""name"": ""polOut"", ""type"": ""uint256"", ""internalType"": ""uint256"" }
+                    ],
+                    ""stateMutability"": ""view""
+                }
+            ]";
         }
 
         #endregion
 
         #region Panel Management
 
-        public void ShowDiamondToKasiPanel()
+        public void ShowSwapPanel()
         {
-            if (diamondToKasiPanel != null)
+            if (swapPanel != null)
             {
-                diamondToKasiPanel.SetActive(true);
-                ResetDiamondToKasiUI();
-                _ = UpdateDiamondToKasiBalances();
+                swapPanel.SetActive(true);
+                ResetUI();
+                _ = UpdateBalancesAsync();
             }
         }
 
-        public void HideDiamondToKasiPanel()
+        public void HideSwapPanel()
         {
-            if (diamondToKasiPanel != null)
+            if (swapPanel != null)
             {
-                diamondToKasiPanel.SetActive(false);
-                ResetDiamondToKasiUI();
-            }
-        }
-
-        public void ShowKasiToDiamondPanel()
-        {
-            if (kasiToDiamondPanel != null)
-            {
-                kasiToDiamondPanel.SetActive(true);
-                ResetKasiToDiamondUI();
-                _ = UpdateKasiToDiamondBalances();
-            }
-        }
-
-        public void HideKasiToDiamondPanel()
-        {
-            if (kasiToDiamondPanel != null)
-            {
-                kasiToDiamondPanel.SetActive(false);
-                ResetKasiToDiamondUI();
+                swapPanel.SetActive(false);
+                ResetUI();
             }
         }
 
         #endregion
 
-        #region Diamond to KASI Swap
+        #region Swap Calculation - CORRECTED VERSION
 
-        private void ResetDiamondToKasiUI()
+        private async Task CalculateAndDisplayOutputAsync()
         {
-            if (diamondToKasiAmountInput != null) diamondToKasiAmountInput.text = "";
-            if (diamondToKasiStatusText != null)
+            if (!poolsInitialized || !IsValidAmount(amountInput?.text))
             {
-                diamondToKasiStatusText.text = faucetContractInitialized ? "Enter Diamond amount" : "Initializing...";
-                diamondToKasiStatusText.color = Color.white;
-            }
-            if (diamondToKasiFeeText != null) diamondToKasiFeeText.text = "Gas: ~0.002-0.008 POL";
-            if (diamondToKasiProgressSlider != null) diamondToKasiProgressSlider.value = 0;
-            if (diamondToKasiOutputText != null) diamondToKasiOutputText.text = "0.0000";
-            UpdateDiamondToKasiButtonState();
-        }
-
-        private void OnDiamondToKasiInputChanged()
-        {
-            UpdateDiamondToKasiButtonState();
-            UpdateDiamondToKasiFeeEstimate();
-            _ = CalculateAndDisplayDiamondToKasiOutput();
-        }
-
-        private void UpdateDiamondToKasiButtonState()
-        {
-            if (diamondToKasiSwapButton == null) return;
-
-            bool isValid = IsValidAmount(diamondToKasiAmountInput?.text);
-            diamondToKasiSwapButton.interactable = isValid && faucetContractInitialized;
-
-            var buttonText = diamondToKasiSwapButton.GetComponentInChildren<TMP_Text>();
-            if (buttonText != null)
-            {
-                buttonText.text = !faucetContractInitialized ? "INITIALIZING..." : "SWAP DIAMOND FOR KASI";
-            }
-        }
-
-        private void UpdateDiamondToKasiFeeEstimate()
-        {
-            if (diamondToKasiFeeText == null || !IsValidAmount(diamondToKasiAmountInput?.text) || !faucetContractInitialized)
-                return;
-
-            diamondToKasiFeeText.text = "Gas: ~0.002-0.008 POL";
-        }
-
-        private async Task CalculateAndDisplayDiamondToKasiOutput()
-        {
-            if (!faucetContractInitialized || !IsValidAmount(diamondToKasiAmountInput?.text))
-            {
-                if (diamondToKasiOutputText != null) diamondToKasiOutputText.text = "0.0000";
+                if (outputText != null) outputText.text = "0.0000";
                 return;
             }
 
             try
             {
-                decimal inputAmount = decimal.Parse(diamondToKasiAmountInput.text);
+                decimal inputAmount = decimal.Parse(amountInput.text);
                 BigInteger inputAmountWei = ConvertToWei(inputAmount, TOKEN_DECIMALS);
+                BigInteger expectedOutput = BigInteger.Zero;
 
-                var reserves = await ThirdwebContract.Read<BigInteger[]>(
-                    faucetContract,
-                    "getReserves"
-                );
-
-                BigInteger diamondReserve = reserves[0];
-                BigInteger kasiReserve = reserves[1];
-
-                // Calculate expected output using contract formula
-                BigInteger k = diamondReserve * kasiReserve;
-                BigInteger newDiamond = diamondReserve + inputAmountWei;
-                BigInteger newKasiReserve = k / newDiamond;
-                BigInteger expectedOutput = kasiReserve - newKasiReserve;
-
-                // Check floor price
-                BigInteger effectivePrice = expectedOutput * BigInteger.Parse("1000000000000000000") / inputAmountWei;
-                if (effectivePrice < floorPrice)
+                // CORRECTED: Based on your actual reserves where DMD is more valuable
+                if (selectedFromCurrency == Currency.KASI && selectedToCurrency == Currency.DIAMOND)
                 {
-                    if (diamondToKasiOutputText != null)
-                        diamondToKasiOutputText.text = "Below floor price";
-                    UpdateDiamondToKasiStatus("Price below minimum floor", false);
-                    return;
+                    // KASI -> DMD: Need more KASI to get DMD
+                    var reserves = await ThirdwebContract.Read<BigInteger[]>(kasiDmdPoolContract, "getReserves");
+                    // Assuming reserves[0] = KASI, reserves[1] = DMD based on your actual pool
+                    BigInteger dmdReserve = reserves[0]; // Assuming reserves[0] is DIAMOND
+                    BigInteger kasiReserve = reserves[1];   // Assuming reserves[1] is KASI
+                    
+                    // With DMD being more valuable, we need to invert the calculation
+                    // Actually, we should use the same formula but understand that DMD output will be small
+                    BigInteger k = kasiReserve * dmdReserve;
+                    BigInteger newKasi = kasiReserve + inputAmountWei;
+                    BigInteger newDmdReserve = k / newKasi;
+                    expectedOutput = dmdReserve - newDmdReserve;
+                    
+                    Debug.Log($"KASI->DMD: Input {inputAmount} KASI, Expected {ConvertFromWei(expectedOutput, TOKEN_DECIMALS)} DMD");
+                }
+                else if (selectedFromCurrency == Currency.DIAMOND && selectedToCurrency == Currency.KASI)
+                {
+                    // DMD -> KASI: Small DMD gives lots of KASI
+                    var reserves = await ThirdwebContract.Read<BigInteger[]>(kasiDmdPoolContract, "getReserves");
+                    BigInteger dmdReserve = reserves[0]; // Assuming reserves[0] is DIAMOND
+                    BigInteger kasiReserve = reserves[1];   // Assuming reserves[1] is KASI
+                    
+                    BigInteger k = kasiReserve * dmdReserve;
+                    BigInteger newDmd = dmdReserve + inputAmountWei;
+                    BigInteger newKasiReserve = k / newDmd;
+                    expectedOutput = kasiReserve - newKasiReserve;
+
+                    // Check floor price - DMD should be more valuable than floor
+                    BigInteger effectivePrice = expectedOutput * BigInteger.Parse("1000000000000000000") / inputAmountWei;
+                    if (effectivePrice < floorPrice)
+                    {
+                        outputText.text = "Below floor price";
+                        UpdateStatus("Price below minimum floor", false);
+                        return;
+                    }
+                    
+                    Debug.Log($"DMD->KASI: Input {inputAmount} DMD, Expected {ConvertFromWei(expectedOutput, TOKEN_DECIMALS)} KASI");
+                }
+                else if (selectedFromCurrency == Currency.DIAMOND && selectedToCurrency == Currency.POL)
+                {
+                    var reserves = await ThirdwebContract.Read<BigInteger[]>(dmdPolPoolContract, "getReserves");
+                    // Assuming reserves[0] = POL, reserves[1] = DMD
+                    BigInteger polReserve = reserves[0];
+                    BigInteger dmdReserve = reserves[1];
+                    
+                    BigInteger k = polReserve * dmdReserve;
+                    BigInteger newDmd = dmdReserve + inputAmountWei;
+                    BigInteger newPolReserve = k / newDmd;
+                    expectedOutput = polReserve - newPolReserve;
+                }
+                else if (selectedFromCurrency == Currency.POL && selectedToCurrency == Currency.DIAMOND)
+                {
+                    var reserves = await ThirdwebContract.Read<BigInteger[]>(dmdPolPoolContract, "getReserves");
+                    BigInteger polReserve = reserves[0];
+                    BigInteger dmdReserve = reserves[1];
+                    
+                    BigInteger k = polReserve * dmdReserve;
+                    BigInteger newPol = polReserve + inputAmountWei;
+                    BigInteger newDmdReserve = k / newPol;
+                    expectedOutput = dmdReserve - newDmdReserve;
                 }
 
                 decimal outputAmount = ConvertFromWei(expectedOutput, TOKEN_DECIMALS);
+                if (outputText != null)
+                    outputText.text = $"{outputAmount:F4} {currencySymbols[selectedToCurrency]}";
 
-                if (diamondToKasiOutputText != null)
-                    diamondToKasiOutputText.text = $"{outputAmount:F4}";
-
-                UpdateDiamondToKasiStatus("Ready to swap", true);
+                UpdateStatus("Ready to swap", true);
             }
             catch (System.Exception e)
             {
-                Debug.LogError($"Error calculating Diamond to KASI output: {e.Message}");
-                if (diamondToKasiOutputText != null) diamondToKasiOutputText.text = "Error";
+                Debug.LogError($"Error calculating output: {e.Message}");
+                if (outputText != null) outputText.text = "Error";
             }
         }
 
-        private async Task ExecuteDiamondToKasiSwapAsync()
+        #endregion
+
+        #region Swap Execution - CORRECTED VERSION
+
+        private async Task ExecuteSwapAsync()
         {
-            if (!faucetContractInitialized || !IsValidAmount(diamondToKasiAmountInput?.text))
+            if (!poolsInitialized || !IsValidAmount(amountInput?.text))
             {
-                UpdateDiamondToKasiStatus("Invalid swap parameters", false);
+                UpdateStatus("Invalid swap parameters", false);
                 return;
             }
 
             try
             {
-                if (diamondToKasiSwapButton != null) diamondToKasiSwapButton.interactable = false;
+                if (swapButton != null) swapButton.interactable = false;
+                if (progressSlider != null) progressSlider.value = 0.1f;
 
-                var wallet = ThirdwebManager.Instance.GetActiveWallet();
-                if (wallet == null)
+                if (activeWallet == null)
                 {
-                    UpdateDiamondToKasiStatus("Wallet not connected", false);
+                    UpdateStatus("Wallet not connected", false);
                     return;
                 }
 
-                decimal inputAmount = decimal.Parse(diamondToKasiAmountInput.text);
+                decimal inputAmount = decimal.Parse(amountInput.text);
                 BigInteger inputAmountWei = ConvertToWei(inputAmount, TOKEN_DECIMALS);
 
                 // Get reserves and calculate expected output
-                UpdateDiamondToKasiStatus("Fetching reserves...", true);
-                if (diamondToKasiProgressSlider != null) diamondToKasiProgressSlider.value = 0.1f;
+                UpdateStatus("Fetching reserves...", true);
+                if (progressSlider != null) progressSlider.value = 0.2f;
 
-                var reserves = await ThirdwebContract.Read<BigInteger[]>(
-                    faucetContract,
-                    "getReserves"
-                );
+                BigInteger expectedOutput = BigInteger.Zero;
+                ThirdwebContract poolContract = null;
+                ThirdwebContract tokenContract = null;
+                string swapMethod = "";
+                BigInteger weiValue = BigInteger.Zero;
+                object[] parameters = null;
 
-                BigInteger diamondReserve = reserves[0];
-                BigInteger kasiReserve = reserves[1];
-
-                // Calculate expected output using contract formula
-                BigInteger k = diamondReserve * kasiReserve;
-                BigInteger newDiamond = diamondReserve + inputAmountWei;
-                BigInteger newKasiReserve = k / newDiamond;
-                BigInteger expectedOutput = kasiReserve - newKasiReserve;
-
-                // Apply slippage
-                BigInteger minOutput = ApplySlippage(expectedOutput, slippageTolerance);
-                Debug.Log($"Swapping {inputAmount} DIAMOND for minimum {ConvertFromWei(minOutput, TOKEN_DECIMALS)} KASI");
-
-                // Check Diamond balance
-                UpdateDiamondToKasiStatus("Checking Diamond balance...", true);
-                if (diamondToKasiProgressSlider != null) diamondToKasiProgressSlider.value = 0.2f;
-
-                string userAddress = await wallet.GetAddress();
-                var balance = await ThirdwebContract.Read<BigInteger>(diamondContract, "balanceOf", userAddress);
-
-                if (balance < inputAmountWei)
+                // Determine which pool and method to use
+                if (selectedFromCurrency == Currency.KASI && selectedToCurrency == Currency.DIAMOND)
                 {
-                    UpdateDiamondToKasiStatus($"Insufficient Diamond. You have {ConvertFromWei(balance, TOKEN_DECIMALS)}", false);
-                    return;
+                    poolContract = kasiDmdPoolContract;
+                    tokenContract = kasiContract;
+                    swapMethod = "swapKasiForDiamond";
+
+                    var reserves = await ThirdwebContract.Read<BigInteger[]>(poolContract, "getReserves");
+                    BigInteger dmdReserve = reserves[0];
+                    BigInteger kasiReserve = reserves[1];
+                    BigInteger k = kasiReserve * dmdReserve;
+                    BigInteger newKasi = kasiReserve + inputAmountWei;
+                    BigInteger newDmdReserve = k / newKasi;
+                    expectedOutput = dmdReserve - newDmdReserve;
+                }
+                else if (selectedFromCurrency == Currency.DIAMOND && selectedToCurrency == Currency.KASI)
+                {
+                    poolContract = kasiDmdPoolContract;
+                    tokenContract = diamondContract;
+                    swapMethod = "swapDiamondForKasi";
+
+                    var reserves = await ThirdwebContract.Read<BigInteger[]>(poolContract, "getReserves");
+                    BigInteger dmdReserve = reserves[0];
+                    BigInteger kasiReserve = reserves[1];
+                    BigInteger k = kasiReserve * dmdReserve;
+                    BigInteger newDmd = dmdReserve + inputAmountWei;
+                    BigInteger newKasiReserve = k / newDmd;
+                    expectedOutput = kasiReserve - newKasiReserve;
+                }
+                else if (selectedFromCurrency == Currency.DIAMOND && selectedToCurrency == Currency.POL)
+                {
+                    poolContract = dmdPolPoolContract;
+                    tokenContract = diamondContract;
+                    swapMethod = "swapDiamondForPol";
+
+                    var reserves = await ThirdwebContract.Read<BigInteger[]>(poolContract, "getReserves");
+                    BigInteger polReserve = reserves[0];
+                    BigInteger dmdReserve = reserves[1];
+                    BigInteger k = polReserve * dmdReserve;
+                    BigInteger newDmd = dmdReserve + inputAmountWei;
+                    BigInteger newPolReserve = k / newDmd;
+                    expectedOutput = polReserve - newPolReserve;
+                }
+                else if (selectedFromCurrency == Currency.POL && selectedToCurrency == Currency.DIAMOND)
+                {
+                    poolContract = dmdPolPoolContract;
+                    swapMethod = "swapPolForDiamond";
+                    weiValue = inputAmountWei;
+
+                    var reserves = await ThirdwebContract.Read<BigInteger[]>(poolContract, "getReserves");
+                    BigInteger polReserve = reserves[0];
+                    BigInteger dmdReserve = reserves[1];
+                    BigInteger k = polReserve * dmdReserve;
+                    BigInteger newPol = polReserve + inputAmountWei;
+                    BigInteger newDmdReserve = k / newPol;
+                    expectedOutput = dmdReserve - newDmdReserve;
                 }
 
-                // Check allowance
-                UpdateDiamondToKasiStatus("Checking allowance...", true);
-                if (diamondToKasiProgressSlider != null) diamondToKasiProgressSlider.value = 0.3f;
+                // Apply slippage tolerance - FIXED calculation
+                BigInteger minOutput = ApplySlippage(expectedOutput, slippageTolerance);
+                Debug.Log($"Swapping {inputAmount} {currencySymbols[selectedFromCurrency]} for min {ConvertFromWei(minOutput, TOKEN_DECIMALS)} {currencySymbols[selectedToCurrency]} (Expected: {ConvertFromWei(expectedOutput, TOKEN_DECIMALS)})");
 
-                var allowance = await ThirdwebContract.Read<BigInteger>(
-                    diamondContract,
-                    "allowance",
-                    userAddress,
-                    faucetAddress
-                );
+                // Check balance
+                UpdateStatus($"Checking {currencySymbols[selectedFromCurrency]} balance...", true);
+                if (progressSlider != null) progressSlider.value = 0.3f;
 
-                // Approve if needed
-                if (allowance < inputAmountWei)
+                if (selectedFromCurrency != Currency.POL)
                 {
-                    UpdateDiamondToKasiStatus("Approving Diamond...", true);
-                    if (diamondToKasiProgressSlider != null) diamondToKasiProgressSlider.value = 0.4f;
+                    var balance = await ThirdwebContract.Read<BigInteger>(tokenContract, "balanceOf", userAddress);
+                    if (balance < inputAmountWei)
+                    {
+                        UpdateStatus($"Insufficient {currencySymbols[selectedFromCurrency]}. You have {ConvertFromWei(balance, TOKEN_DECIMALS)}", false);
+                        return;
+                    }
 
-                    var approveTxHash = await ThirdwebContract.Write(
-                        wallet,
-                        diamondContract,
-                        "approve",
-                        0,
-                        faucetAddress,
-                        inputAmountWei
+                    // Check and approve allowance
+                    UpdateStatus("Checking allowance...", true);
+                    if (progressSlider != null) progressSlider.value = 0.4f;
+
+                    var allowance = await ThirdwebContract.Read<BigInteger>(
+                        tokenContract,
+                        "allowance",
+                        userAddress,
+                        poolContract.Address
                     );
 
-                    Debug.Log($"Approval transaction: {approveTxHash}");
-                    await Task.Delay(2000);
+                    if (allowance < inputAmountWei)
+                    {
+                        UpdateStatus($"Approving {currencySymbols[selectedFromCurrency]}...", true);
+                        if (progressSlider != null) progressSlider.value = 0.5f;
+
+                        var approveReceipt = await ThirdwebContract.Write(
+                            activeWallet,
+                            tokenContract,
+                            "approve",
+                            BigInteger.Zero,
+                            poolContract.Address,
+                            inputAmountWei
+                        );
+
+                        Debug.Log($"Approval transaction: {approveReceipt.TransactionHash}");
+                        await Task.Delay(2000);
+                    }
+                }
+                else
+                {
+                    // Check POL balance
+                    var polBalance = await activeWallet.GetBalance(chainId: chainId);
+                    if (polBalance < inputAmountWei + ConvertToWei(0.01m, TOKEN_DECIMALS)) // Add gas buffer
+                    {
+                        UpdateStatus($"Insufficient POL. You have {ConvertFromWei(polBalance, TOKEN_DECIMALS)}", false);
+                        return;
+                    }
                 }
 
-                // Execute swap using contract function
-                UpdateDiamondToKasiStatus("Executing swap...", true);
-                if (diamondToKasiProgressSlider != null) diamondToKasiProgressSlider.value = 0.6f;
+                // Execute swap
+                UpdateStatus("Executing swap...", true);
+                if (progressSlider != null) progressSlider.value = 0.6f;
+                
+                // Build parameters based on swap type
+                if (selectedFromCurrency == Currency.POL)
+                {
+                    // POL swap with value - only minOutput parameter
+                    parameters = new object[] { minOutput };
+                }
+                else if (selectedFromCurrency == Currency.KASI && selectedToCurrency == Currency.DIAMOND)
+                {
+                    // KASI to DMD - inputAmountWei, minOutput
+                    parameters = new object[] { inputAmountWei, minOutput };
+                }
+                else if (selectedFromCurrency == Currency.DIAMOND && selectedToCurrency == Currency.KASI)
+                {
+                    // DMD to KASI - inputAmountWei, minOutput
+                    parameters = new object[] { inputAmountWei, minOutput };
+                }
+                else if (selectedFromCurrency == Currency.DIAMOND && selectedToCurrency == Currency.POL)
+                {
+                    // DMD to POL - inputAmountWei, minOutput
+                    parameters = new object[] { inputAmountWei, minOutput };
+                }
 
-                var swapTxHash = await ThirdwebContract.Write(
-                    wallet,
-                    faucetContract,
-                    "swapDiamondForKasi",
-                    0,
-                    inputAmountWei,
-                    minOutput
+                Debug.Log($"Executing {swapMethod} with value {weiValue} and parameters: {string.Join(", ", parameters)}");
+
+                // Execute the transaction
+                swapTxn = await ThirdwebContract.Write(
+                    activeWallet,
+                    poolContract,
+                    swapMethod,
+                    weiValue,
+                    parameters
                 );
 
-                Debug.Log($"Diamond to KASI swap transaction hash: {swapTxHash}");
+                string swapTxHash = swapTxn.TransactionHash;
+                Debug.Log($"Swap transaction hash: {swapTxHash}");
 
                 // Wait for confirmation
-                UpdateDiamondToKasiStatus("Waiting for confirmation...", true);
-                if (diamondToKasiProgressSlider != null) diamondToKasiProgressSlider.value = 0.8f;
+                UpdateStatus("Waiting for confirmation...", true);
+                if (progressSlider != null) progressSlider.value = 0.8f;
                 await Task.Delay(3000);
 
-                UpdateDiamondToKasiStatus("Swap confirmed!", true);
-                if (diamondToKasiProgressSlider != null) diamondToKasiProgressSlider.value = 1f;
+                UpdateStatus("Swap confirmed!", true);
+                if (progressSlider != null) progressSlider.value = 1f;
 
                 // Refresh balances
                 if (userDetails != null)
@@ -507,263 +707,28 @@ namespace Thirdweb.Unity
 
                 await Task.Delay(2000);
                 decimal outputAmount = ConvertFromWei(expectedOutput, TOKEN_DECIMALS);
-                UpdateDiamondToKasiStatus($"Successfully swapped {inputAmount} DIAMOND for ~{outputAmount:F4} KASI!", true);
+                UpdateStatus($"Successfully swapped {inputAmount} {currencySymbols[selectedFromCurrency]} for ~{outputAmount:F4} {currencySymbols[selectedToCurrency]}!", true);
                 await Task.Delay(2000);
 
-                HideDiamondToKasiPanel();
+                HideSwapPanel();
             }
             catch (System.Exception e)
             {
-                Debug.LogError($"Diamond to KASI swap error: {e.Message}");
-                UpdateDiamondToKasiStatus($"Swap failed: {ParseErrorMessage(e.Message)}", false);
+                Debug.LogError($"Swap error: {e.Message}");
+                string errorMsg = ParseErrorMessage(e.Message);
+                
+                // Special handling for slippage errors
+                if (errorMsg.Contains("Slippage exceeded"))
+                {
+                    errorMsg += ". Try increasing slippage tolerance or reducing swap amount.";
+                }
+                
+                UpdateStatus($"Swap failed: {errorMsg}", false);
             }
             finally
             {
-                if (diamondToKasiSwapButton != null) diamondToKasiSwapButton.interactable = true;
-                if (diamondToKasiProgressSlider != null) diamondToKasiProgressSlider.value = 0;
-            }
-        }
-
-        private void UpdateDiamondToKasiStatus(string message, bool isSuccess)
-        {
-            if (diamondToKasiStatusText != null)
-            {
-                diamondToKasiStatusText.text = message;
-                diamondToKasiStatusText.color = isSuccess ? new Color(0.2f, 0.8f, 0.2f) : new Color(0.9f, 0.2f, 0.2f);
-            }
-        }
-
-        #endregion
-
-        #region KASI to Diamond Swap
-
-        private void ResetKasiToDiamondUI()
-        {
-            if (kasiToDiamondAmountInput != null) kasiToDiamondAmountInput.text = "";
-            if (kasiToDiamondStatusText != null)
-            {
-                kasiToDiamondStatusText.text = faucetContractInitialized ? "Enter KASI amount" : "Initializing...";
-                kasiToDiamondStatusText.color = Color.white;
-            }
-            if (kasiToDiamondFeeText != null) kasiToDiamondFeeText.text = "Gas: ~0.002-0.008 POL";
-            if (kasiToDiamondProgressSlider != null) kasiToDiamondProgressSlider.value = 0;
-            if (kasiToDiamondOutputText != null) kasiToDiamondOutputText.text = "0.0000";
-            UpdateKasiToDiamondButtonState();
-        }
-
-        private void OnKasiToDiamondInputChanged()
-        {
-            UpdateKasiToDiamondButtonState();
-            UpdateKasiToDiamondFeeEstimate();
-            _ = CalculateAndDisplayKasiToDiamondOutput();
-        }
-
-        private void UpdateKasiToDiamondButtonState()
-        {
-            if (kasiToDiamondSwapButton == null) return;
-
-            bool isValid = IsValidAmount(kasiToDiamondAmountInput?.text);
-            kasiToDiamondSwapButton.interactable = isValid && faucetContractInitialized;
-
-            var buttonText = kasiToDiamondSwapButton.GetComponentInChildren<TMP_Text>();
-            if (buttonText != null)
-            {
-                buttonText.text = !faucetContractInitialized ? "INITIALIZING..." : "SWAP KASI FOR DIAMOND";
-            }
-        }
-
-        private void UpdateKasiToDiamondFeeEstimate()
-        {
-            if (kasiToDiamondFeeText == null || !IsValidAmount(kasiToDiamondAmountInput?.text) || !faucetContractInitialized)
-                return;
-
-            kasiToDiamondFeeText.text = "Gas: ~0.002-0.008 POL";
-        }
-
-        private async Task CalculateAndDisplayKasiToDiamondOutput()
-        {
-            if (!faucetContractInitialized || !IsValidAmount(kasiToDiamondAmountInput?.text))
-            {
-                if (kasiToDiamondOutputText != null) kasiToDiamondOutputText.text = "0.0000";
-                return;
-            }
-
-            try
-            {
-                decimal inputAmount = decimal.Parse(kasiToDiamondAmountInput.text);
-                BigInteger inputAmountWei = ConvertToWei(inputAmount, TOKEN_DECIMALS);
-
-                var reserves = await ThirdwebContract.Read<BigInteger[]>(
-                    faucetContract,
-                    "getReserves"
-                );
-
-                BigInteger diamondReserve = reserves[0];
-                BigInteger kasiReserve = reserves[1];
-
-                // Calculate expected output using contract formula
-                BigInteger k = diamondReserve * kasiReserve;
-                BigInteger newKasi = kasiReserve + inputAmountWei;
-                BigInteger newDiamondReserve = k / newKasi;
-                BigInteger expectedOutput = diamondReserve - newDiamondReserve;
-
-                decimal outputAmount = ConvertFromWei(expectedOutput, TOKEN_DECIMALS);
-
-                if (kasiToDiamondOutputText != null)
-                    kasiToDiamondOutputText.text = $"{outputAmount:F4}";
-
-                UpdateKasiToDiamondStatus("Ready to swap", true);
-            }
-            catch (System.Exception e)
-            {
-                Debug.LogError($"Error calculating KASI to Diamond output: {e.Message}");
-                if (kasiToDiamondOutputText != null) kasiToDiamondOutputText.text = "Error";
-            }
-        }
-
-        private async Task ExecuteKasiToDiamondSwapAsync()
-        {
-            if (!faucetContractInitialized || !IsValidAmount(kasiToDiamondAmountInput?.text))
-            {
-                UpdateKasiToDiamondStatus("Invalid swap parameters", false);
-                return;
-            }
-
-            try
-            {
-                if (kasiToDiamondSwapButton != null) kasiToDiamondSwapButton.interactable = false;
-
-                var wallet = ThirdwebManager.Instance.GetActiveWallet();
-                if (wallet == null)
-                {
-                    UpdateKasiToDiamondStatus("Wallet not connected", false);
-                    return;
-                }
-
-                decimal inputAmount = decimal.Parse(kasiToDiamondAmountInput.text);
-                BigInteger inputAmountWei = ConvertToWei(inputAmount, TOKEN_DECIMALS);
-
-                // Get reserves and calculate expected output
-                UpdateKasiToDiamondStatus("Fetching reserves...", true);
-                if (kasiToDiamondProgressSlider != null) kasiToDiamondProgressSlider.value = 0.1f;
-
-                var reserves = await ThirdwebContract.Read<BigInteger[]>(
-                    faucetContract,
-                    "getReserves"
-                );
-
-                BigInteger diamondReserve = reserves[0];
-                BigInteger kasiReserve = reserves[1];
-
-                // Calculate expected output using contract formula
-                BigInteger k = diamondReserve * kasiReserve;
-                BigInteger newKasi = kasiReserve + inputAmountWei;
-                BigInteger newDiamondReserve = k / newKasi;
-                BigInteger expectedOutput = diamondReserve - newDiamondReserve;
-
-                // Apply slippage tolerance to get minimum output
-                BigInteger minOutput = ApplySlippage(expectedOutput, slippageTolerance);
-
-                Debug.Log($"Swapping {inputAmount} KASI for minimum {ConvertFromWei(minOutput, TOKEN_DECIMALS)} DIAMOND");
-
-                // Check KASI balance
-                UpdateKasiToDiamondStatus("Checking KASI balance...", true);
-                if (kasiToDiamondProgressSlider != null) kasiToDiamondProgressSlider.value = 0.2f;
-
-                string userAddress = await wallet.GetAddress();
-                var balance = await ThirdwebContract.Read<BigInteger>(kasiContract, "balanceOf", userAddress);
-
-                if (balance < inputAmountWei)
-                {
-                    UpdateKasiToDiamondStatus($"Insufficient KASI. You have {ConvertFromWei(balance, TOKEN_DECIMALS)}", false);
-                    return;
-                }
-
-                // Check allowance
-                UpdateKasiToDiamondStatus("Checking allowance...", true);
-                if (kasiToDiamondProgressSlider != null) kasiToDiamondProgressSlider.value = 0.3f;
-
-                var allowance = await ThirdwebContract.Read<BigInteger>(
-                    kasiContract,
-                    "allowance",
-                    userAddress,
-                    faucetAddress
-                );
-
-                // Approve if needed
-                if (allowance < inputAmountWei)
-                {
-                    UpdateKasiToDiamondStatus("Approving KASI...", true);
-                    if (kasiToDiamondProgressSlider != null) kasiToDiamondProgressSlider.value = 0.4f;
-
-                    var approveTxHash = await ThirdwebContract.Write(
-                        wallet,
-                        kasiContract,
-                        "approve",
-                        0,
-                        faucetAddress,
-                        inputAmountWei
-                    );
-
-                    Debug.Log($"Approval transaction: {approveTxHash}");
-                    await Task.Delay(2000);
-                }
-
-                // Execute swap using contract function
-                UpdateKasiToDiamondStatus("Executing swap...", true);
-                if (kasiToDiamondProgressSlider != null) kasiToDiamondProgressSlider.value = 0.6f;
-
-                var swapTxHash = await ThirdwebContract.Write(
-                    wallet,
-                    faucetContract,
-                    "swapKasiForDiamond",
-                    0,
-                    inputAmountWei,
-                    minOutput
-                );
-
-                Debug.Log($"KASI to Diamond swap transaction hash: {swapTxHash}");
-
-                // Wait for confirmation
-                UpdateKasiToDiamondStatus("Waiting for confirmation...", true);
-                if (kasiToDiamondProgressSlider != null) kasiToDiamondProgressSlider.value = 0.8f;
-                await Task.Delay(3000);
-
-                UpdateKasiToDiamondStatus("Swap confirmed!", true);
-                if (kasiToDiamondProgressSlider != null) kasiToDiamondProgressSlider.value = 1f;
-
-                // Refresh balances
-                if (userDetails != null)
-                {
-                    await Task.Delay(1000);
-                    userDetails.RefreshWalletBalance();
-                }
-
-                await Task.Delay(2000);
-                decimal outputAmount = ConvertFromWei(expectedOutput, TOKEN_DECIMALS);
-                UpdateKasiToDiamondStatus($"Successfully swapped {inputAmount} KASI for ~{outputAmount:F4} DIAMOND!", true);
-                await Task.Delay(2000);
-
-                HideKasiToDiamondPanel();
-            }
-            catch (System.Exception e)
-            {
-                Debug.LogError($"KASI to Diamond swap error: {e.Message}");
-                UpdateKasiToDiamondStatus($"Swap failed: {ParseErrorMessage(e.Message)}", false);
-            }
-            finally
-            {
-                if (kasiToDiamondSwapButton != null) kasiToDiamondSwapButton.interactable = true;
-                if (kasiToDiamondProgressSlider != null) kasiToDiamondProgressSlider.value = 0;
-            }
-        }
-
-        private void UpdateKasiToDiamondStatus(string message, bool isSuccess)
-        {
-            if (kasiToDiamondStatusText != null)
-            {
-                kasiToDiamondStatusText.text = message;
-                kasiToDiamondStatusText.color = isSuccess ? new Color(0.2f, 0.8f, 0.2f) : new Color(0.9f, 0.2f, 0.2f);
+                if (swapButton != null) swapButton.interactable = true;
+                if (progressSlider != null) progressSlider.value = 0;
             }
         }
 
@@ -771,69 +736,58 @@ namespace Thirdweb.Unity
 
         #region Balance Updates
 
-        private async Task UpdateDiamondToKasiBalances()
+        private async Task UpdateBalancesAsync()
         {
-            if (!faucetContractInitialized) return;
+            if (!poolsInitialized || activeWallet == null) return;
 
             try
             {
-                var wallet = ThirdwebManager.Instance.GetActiveWallet();
-                if (wallet == null) return;
+                if (userAddress == null)
+                {
+                    userAddress = await activeWallet.GetAddress();
+                }
 
-                string userAddress = await wallet.GetAddress();
+                // Get POL balance
+                BigInteger polBalance = await activeWallet.GetBalance(chainId: chainId);
 
-                var diamondBalance = await ThirdwebContract.Read<BigInteger>(
-                    diamondContract,
-                    "balanceOf",
-                    userAddress
-                );
-                var kasiBalance = await ThirdwebContract.Read<BigInteger>(
+                // Get KASI balance
+                BigInteger kasiBalance = await ThirdwebContract.Read<BigInteger>(
                     kasiContract,
                     "balanceOf",
                     userAddress
                 );
 
-                if (diamondToKasiDiamondBalance != null)
-                    diamondToKasiDiamondBalance.text = $"Balance: {ConvertFromWei(diamondBalance, TOKEN_DECIMALS):F4} DIAMOND";
-                if (diamondToKasiKasiBalance != null)
-                    diamondToKasiKasiBalance.text = $"Balance: {ConvertFromWei(kasiBalance, TOKEN_DECIMALS):F4} KASI";
-            }
-            catch (System.Exception e)
-            {
-                Debug.LogError($"Error updating Diamond to KASI balances: {e.Message}");
-            }
-        }
-
-        private async Task UpdateKasiToDiamondBalances()
-        {
-            if (!faucetContractInitialized) return;
-
-            try
-            {
-                var wallet = ThirdwebManager.Instance.GetActiveWallet();
-                if (wallet == null) return;
-
-                string userAddress = await wallet.GetAddress();
-
-                var kasiBalance = await ThirdwebContract.Read<BigInteger>(
-                    kasiContract,
-                    "balanceOf",
-                    userAddress
-                );
-                var diamondBalance = await ThirdwebContract.Read<BigInteger>(
+                // Get DIAMOND balance
+                BigInteger diamondBalance = await ThirdwebContract.Read<BigInteger>(
                     diamondContract,
                     "balanceOf",
                     userAddress
                 );
 
-                if (kasiToDiamondKasiBalance != null)
-                    kasiToDiamondKasiBalance.text = $"Balance: {ConvertFromWei(kasiBalance, TOKEN_DECIMALS):F4} KASI";
-                if (kasiToDiamondDiamondBalance != null)
-                    kasiToDiamondDiamondBalance.text = $"Balance: {ConvertFromWei(diamondBalance, TOKEN_DECIMALS):F4} DIAMOND";
+                // Update UI
+                if (fromBalanceText != null)
+                {
+                    BigInteger fromBalance = selectedFromCurrency == Currency.KASI ? kasiBalance :
+                                           selectedFromCurrency == Currency.DIAMOND ? diamondBalance :
+                                           polBalance;
+                    decimal displayBalance = ConvertFromWei(fromBalance, TOKEN_DECIMALS);
+                    fromBalanceText.text = $"{currencySymbols[selectedFromCurrency]}: {displayBalance:F4}";
+                }
+
+                if (toBalanceText != null)
+                {
+                    BigInteger toBalance = selectedToCurrency == Currency.KASI ? kasiBalance :
+                                         selectedToCurrency == Currency.DIAMOND ? diamondBalance :
+                                         polBalance;
+                    decimal displayBalance = ConvertFromWei(toBalance, TOKEN_DECIMALS);
+                    toBalanceText.text = $"{currencySymbols[selectedToCurrency]}: {displayBalance:F4}";
+                }
+
+
             }
             catch (System.Exception e)
             {
-                Debug.LogError($"Error updating KASI to Diamond balances: {e.Message}");
+                Debug.LogError($"Error updating balances: {e.Message}");
             }
         }
 
@@ -843,8 +797,14 @@ namespace Thirdweb.Unity
 
         private BigInteger ApplySlippage(BigInteger amount, float slippagePercent)
         {
-            BigInteger slippageAmount = amount * (BigInteger)(slippagePercent * 100) / 10000;
-            return amount - slippageAmount;
+            if (amount == BigInteger.Zero) return BigInteger.Zero;
+            
+            // Correct slippage calculation: amount * (100 - slippagePercent) / 100
+            BigInteger numerator = amount * (BigInteger)(10000 - (slippagePercent * 100)); // Multiply by 100 for percentage
+            BigInteger result = numerator / 10000;
+            
+            // Ensure minimum of 1 wei
+            return result < 1 ? BigInteger.One : result;
         }
 
         private bool IsValidAmount(string amount)
@@ -855,14 +815,24 @@ namespace Thirdweb.Unity
 
         private string ParseErrorMessage(string error)
         {
-            if (error.Contains("user rejected")) return "Transaction rejected";
-            if (error.Contains("insufficient funds")) return "Insufficient funds for gas";
-            if (error.Contains("Slippage exceeded")) return "Price changed too much, try increasing slippage";
-            if (error.Contains("Price below floor")) return "Price below minimum floor price";
-            if (error.Contains("Insufficient liquidity")) return "Not enough liquidity in pool";
+            if (error.Contains("user rejected") || error.Contains("User denied"))
+                return "Transaction was rejected";
+            if (error.Contains("insufficient funds"))
+                return "Insufficient funds for gas";
+            if (error.Contains("Slippage exceeded") || error.Contains("slippage"))
+                return "Slippage exceeded - price changed";
+            if (error.Contains("Price below floor"))
+                return "Price below minimum floor price";
+            if (error.Contains("Insufficient liquidity"))
+                return "Not enough liquidity in pool";
+            if (error.Contains("allowance"))
+                return "Token approval needed";
+            if (error.Contains("reverted"))
+                return "Transaction reverted";
 
             var lines = error.Split('\n');
-            return lines[0].Length > 60 ? lines[0].Substring(0, 60) + "..." : lines[0];
+            string firstLine = lines[0].Trim();
+            return firstLine.Length > 60 ? firstLine.Substring(0, 60) + "..." : firstLine;
         }
 
         private BigInteger ConvertToWei(decimal amount, int decimals)
@@ -885,6 +855,8 @@ namespace Thirdweb.Unity
 
         private decimal ConvertFromWei(BigInteger wei, int decimals)
         {
+            if (wei == BigInteger.Zero) return 0m;
+            
             BigInteger divisor = BigInteger.Pow(10, decimals);
             BigInteger wholePart = wei / divisor;
             BigInteger remainder = wei % divisor;
@@ -895,27 +867,41 @@ namespace Thirdweb.Unity
             return result;
         }
 
-        #endregion
-
-        #region Public Helper Methods
-
-        public void PrepareDiamondToKasiSwap(decimal amount)
+        private void UpdateStatus(string message, bool isSuccess)
         {
-            ShowDiamondToKasiPanel();
-            if (diamondToKasiAmountInput != null) diamondToKasiAmountInput.text = amount.ToString();
-            OnDiamondToKasiInputChanged();
+            if (statusText != null)
+            {
+                statusText.text = message;
+                statusText.color = isSuccess ? new Color(0.2f, 0.8f, 0.2f) : new Color(0.9f, 0.2f, 0.2f);
+            }
         }
 
-        public void PrepareKasiToDiamondSwap(decimal amount)
+        #endregion
+
+        #region Public Methods
+
+        public void PrepareSwap(Currency fromCurrency, Currency toCurrency, decimal amount)
         {
-            ShowKasiToDiamondPanel();
-            if (kasiToDiamondAmountInput != null) kasiToDiamondAmountInput.text = amount.ToString();
-            OnKasiToDiamondInputChanged();
+            ShowSwapPanel();
+            
+            // Set currencies
+            selectedFromCurrency = fromCurrency;
+            selectedToCurrency = toCurrency;
+            
+            if (fromCurrencyDropdown != null) fromCurrencyDropdown.value = (int)fromCurrency;
+            
+            // Update to dropdown based on from currency
+            UpdateToCurrencyDropdown();
+            
+            // Set amount
+            if (amountInput != null) amountInput.text = amount.ToString();
+            
+            OnAmountInputChanged();
         }
 
         public void SetSlippageTolerance(float percent)
         {
-            slippageTolerance = Mathf.Clamp(percent, 0.1f, 5f);
+            slippageTolerance = Mathf.Clamp(percent, 0.1f, 10f);
             Debug.Log($"Slippage tolerance set to {slippageTolerance}%");
         }
 
