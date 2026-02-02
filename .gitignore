@@ -97,3 +97,20 @@ InitTestScene*.unity*
 
 # Auto-generated scenes by play mode tests
 /[Aa]ssets/[Ii]nit[Tt]est[Ss]cene*.unity*
+
+# ===========================================
+# EXCEPTIONS - Files/Folders to KEEP tracking
+# ===========================================
+
+# DO NOT ignore Assets/Resources/Scripts folder and its contents
+!/[Aa]ssets/
+!/[Aa]ssets/[Rr]esources/
+!/[Aa]ssets/[Rr]esources/[Ss]cripts/
+!/[Aa]ssets/[Rr]esources/[Ss]cripts/**/*
+
+# DO NOT ignore Assets/Resources folder (if you have other important files there)
+!/[Aa]ssets/[Rr]esources/**/*
+
+# If you have other important folders in Assets, add them here:
+# Example: !/[Aa]ssets/[Ss]cenes/
+# Example: !/[Aa]ssets/[Pp]refabs/
