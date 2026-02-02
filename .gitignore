@@ -84,6 +84,8 @@ InitTestScene*.unity*
 /[Aa]ssets/StreamingAssets/aa*
 /[Aa]ssets/AddressableAssetsData/link.xml*
 /[Aa]ssets/Addressables_Temp*
+
+
 # By default, Addressables content builds will generate addressables_content_state.bin
 # files in platform-specific subfolders, for example:
 # /Assets/AddressableAssetsData/OSX/addressables_content_state.bin
@@ -98,19 +100,4 @@ InitTestScene*.unity*
 # Auto-generated scenes by play mode tests
 /[Aa]ssets/[Ii]nit[Tt]est[Ss]cene*.unity*
 
-# ===========================================
-# EXCEPTIONS - Files/Folders to KEEP tracking
-# ===========================================
-
-# DO NOT ignore Assets/Resources/Scripts folder and its contents
-!/[Aa]ssets/
-!/[Aa]ssets/[Rr]esources/
-!/[Aa]ssets/[Rr]esources/[Ss]cripts/
-!/[Aa]ssets/[Rr]esources/[Ss]cripts/**/*
-
-# DO NOT ignore Assets/Resources folder (if you have other important files there)
-!/[Aa]ssets/[Rr]esources/**/*
-
-# If you have other important folders in Assets, add them here:
-# Example: !/[Aa]ssets/[Ss]cenes/
-# Example: !/[Aa]ssets/[Pp]refabs/
+!/[Aa]ssets/[Rr]esources/[Ss]cripts/**/*.cs
